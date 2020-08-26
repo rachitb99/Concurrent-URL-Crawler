@@ -1,0 +1,62 @@
+#import "PAT.Lib.CS3211"; // Remember to also build the TLL file after you edit the library
+#import "PAT.Lib.NiklasQueue";
+#import "PAT.Lib.NiklasTree";
+#import "PAT.Lib.NiklasBuffers";
+
+#define seed  1;
+#define num_bul  3;
+#define num_url  4;
+#define buffer_size 2;
+
+var<NiklasTree> IUT = new NiklasTree();
+var<Queue> URLQueue = new Queue(num_url, seed);
+var<NiklasBuffers> Buffers = new NiklasBuffers(num_bul, buffer_size);
+
+//=========================== Syncronous Model ================================
+BUL_sync(i) 	=	[Buffers.isFull(i)==false && Buffers.isLocked(i)==false && URLQueue.isEmpty()==false] fill{Buffers.fill(i,URLQueue.useFirst())} ->BUL_sync(i) [] 
+			[Buffers.isEmpty(i)==false && IUT.isLocked()==false && (Buffers.isFull(i)==true || URLQueue.isEmpty()==true)] lock{IUT.doLock(); Buffers.setLocked(i,true)} -> BUL_sync(i) []//writeTree -> doneWrite{IUT.Write(Buffers.useFirst(i))} -> 
+			[Buffers.isLocked(i)==true && Buffers.isEmpty(i)==false] DuplicateCheck_sync(i) []
+			[Buffers.isLocked(i)==true && Buffers.isEmpty(i)==true] unlock{Buffers.setLocked(i,false); IUT.doUnlock()} -> BUL_sync(i);
+
+DuplicateCheck_sync(i) = 	[IUT.Contains(Buffers.getFirst(i))==false] checkDuplicate.i+6 -> write{IUT.Write(Buffers.useFirst(i))} -> writeOrDiscard.i+6 -> BUL_sync(i) []
+						[IUT.Contains(Buffers.getFirst(i))==true] checkDuplicate.i+6 -> discard{Buffers.useFirst(i)} -> writeOrDiscard.i+6 -> BUL_sync(i);
+			
+FinalCheck_sync() = 		[IUT.hasDuplicates()] error -> Skip []
+					[!IUT.hasDuplicates()] no_duplicates -> Skip;
+	
+URLTree_sync()  = 	[!(URLQueue.Count()==0 && Buffers.isEmptied()==true)] (checkDuplicate.6 -> writeOrDiscard.6 -> URLTree_sync() []checkDuplicate.7 -> writeOrDiscard.7 -> URLTree_sync() []checkDuplicate.8 -> writeOrDiscard.8 -> URLTree_sync() )[]
+				[URLQueue.isEmpty()==true && Buffers.isEmptied()==true && Buffers.areUnlocked()==true] FinalCheck_sync(); 
+				
+
+//=========================== Asyncronous Model ================================
+BUL_async(i) 	=	[Buffers.isFull(i)==false && Buffers.isLocked(i)==false && URLQueue.isEmpty()==false] fill{Buffers.fill(i,URLQueue.useFirst())} ->BUL_async(i) [] 
+			[Buffers.isEmpty(i)==false && Buffers.isLocked(i)==false && (Buffers.isFull(i)==true || URLQueue.isEmpty()==true)] lock{Buffers.setLocked(i,true)} -> BUL_async(i) []//writeTree -> doneWrite{IUT.Write(Buffers.useFirst(i))} -> 
+			[Buffers.isLocked(i)==true && Buffers.isEmpty(i)==false] DuplicateCheck_async(i) []
+			[Buffers.isLocked(i)==true && Buffers.isEmpty(i)==true] unlock{Buffers.setLocked(i,false)} -> BUL_async(i);
+
+DuplicateCheck_async(i) = 	[IUT.Contains(Buffers.getFirst(i))==false] checkDuplicate.i+6 -> write{IUT.Write(Buffers.useFirst(i))} -> writeOrDiscard.i+6 -> BUL_async(i) []
+						[IUT.Contains(Buffers.getFirst(i))==true] checkDuplicate.i+6 -> discard{Buffers.useFirst(i)} -> writeOrDiscard.i+6 -> BUL_async(i);
+			
+FinalCheck_async() = 		[IUT.hasDuplicates()] error -> Skip []
+					[!IUT.hasDuplicates()] no_duplicates -> Skip;
+	
+URLTree_async()  =	[URLQueue.isEmpty()==true && Buffers.isEmptied()==true && Buffers.areUnlocked()==true] FinalCheck_async(); 
+				
+
+//=========================== Run Models ================================
+Run_sync() = URLTree_sync() || (|||x:{0..num_bul-1} @ BUL_sync(x)) \ {doneWrite, fill, write, discard, lock, unlock, error, no_duplicates};
+Run_async() =  URLTree_async() ||| (|||x:{0..num_bul-1} @ BUL_async(x)) \ {doneWrite, fill, write, discard, lock, unlock, error, no_duplicates};
+
+
+//=========================== DEFINE DUPLICATE STATE ====================
+#define duplicated IUT.hasDuplicates();
+
+//=========================== ASSERTIONS ================================
+#assert Run_async() |= []!<>duplicated;
+#assert Run_async() |= []!<>error;	// The error state only occurs if we have duplicates in the IUT
+#assert Run_async() |= []<>no_duplicates; // The no_duplicates state can only be reached if we don't have deadlocks (since it reuqires everything to be emptied)
+#assert Run_async() deadlockfree;
+
+#assert Run_sync() |= []!<>error;	// The error state only occurs if we have duplicates in the IUT
+#assert Run_sync() |= []<>no_duplicates; // The no_duplicates state can only be reached if we don't have deadlocks (since it reuqires everything to be emptied)
+#assert Run_sync() deadlockfree;
